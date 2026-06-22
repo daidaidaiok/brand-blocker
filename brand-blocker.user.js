@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         电商屏蔽器
 // @namespace    https://github.com/daidaidaiok/brand-blocker
-// @version      2.4.0
-// @description  在淘宝/天猫、京东、拼多多搜索结果中按品牌关键词或店铺名屏蔽商品。支持完全移除/半透明、导入导出 JSON 备份、localStorage 自动镜像防丢失。
+// @version      2.4.1
+// @description  在淘宝/天猫、京东、拼多多搜索结果中按品牌关键词、商品标签（拍拍二手/全球购等）或店铺名屏蔽商品。支持完全移除/半透明、导入导出 JSON 备份、localStorage 自动镜像防丢失。
 // @author       daidaidaiok
 // @match        *://*.taobao.com/*
 // @match        *://*.tmall.com/*
@@ -195,35 +195,67 @@
     return [];
   }
 
+  function collectBadges(card) {
+    var badges = [];
+    var leaves = card.querySelectorAll('span, em, b, i');
+    for (var i = 0; i < leaves.length; i++) {
+      var leaf = leaves[i];
+      if (leaf.children.length) continue;
+      var raw = (leaf.getAttribute('title') || leaf.textContent || '').replace(/\s+/g, ' ').trim();
+      if (raw.length < 2 || raw.length > 8) continue;
+      if (/[¥￥]/.test(raw)) continue;
+      if (/^\d+(\.\d+)?$/.test(raw)) continue;
+      if (badges.indexOf(raw) >= 0) continue;
+      badges.push(raw);
+    }
+    return badges;
+  }
+
   function extractTitle(card) {
+    var main = '';
     if (platformName === 'jd') {
       var el = card;
       while (el && el !== document.body) {
         var t = el.getAttribute && el.getAttribute('title');
-        if (t && t.trim().length > 10) return t.trim();
+        if (t && t.trim().length > 10) { main = t.trim(); break; }
         el = el.parentElement;
       }
-      var child = card.querySelector('[title]');
-      if (child) {
-        var ct = child.getAttribute('title');
-        if (ct && ct.trim().length > 10) return ct.trim();
+      if (!main) {
+        var child = card.querySelector('[title]');
+        if (child) {
+          var ct = child.getAttribute('title');
+          if (ct && ct.trim().length > 10) main = ct.trim();
+        }
       }
-      var img = card.querySelector('img[alt]');
-      if (img && img.alt && img.alt.length > 4) return img.alt;
+      if (!main) {
+        var img = card.querySelector('img[alt]');
+        if (img && img.alt && img.alt.length > 4) main = img.alt;
+      }
     }
-    var spans = card.querySelectorAll('span');
-    var best = '';
-    for (var j = 0; j < spans.length; j++) {
-      var txt = spans[j].textContent.trim();
-      if (txt.length > 10 && txt.indexOf('¥') < 0 && txt.length > best.length) best = txt;
+    if (!main) {
+      var spans = card.querySelectorAll('span');
+      var best = '';
+      for (var j = 0; j < spans.length; j++) {
+        var txt = spans[j].textContent.trim();
+        if (txt.length > 10 && txt.indexOf('¥') < 0 && txt.length > best.length) best = txt;
+      }
+      if (best.length > 10) main = best;
     }
-    if (best.length > 10) return best;
-    var titleEls = card.querySelectorAll('[class*="title"]');
-    for (var k = 0; k < titleEls.length; k++) {
-      var t3 = titleEls[k].textContent.trim();
-      if (t3.length > 10) return t3;
+    if (!main) {
+      var titleEls = card.querySelectorAll('[class*="title"]');
+      for (var k = 0; k < titleEls.length; k++) {
+        var t3 = titleEls[k].textContent.trim();
+        if (t3.length > 10) { main = t3; break; }
+      }
     }
-    return card.textContent || '';
+    if (!main) main = card.textContent || '';
+
+    var badges = collectBadges(card);
+    var extras = [];
+    for (var b = 0; b < badges.length; b++) {
+      if (main.indexOf(badges[b]) < 0) extras.push(badges[b]);
+    }
+    return extras.length ? (main + ' ' + extras.join(' ')) : main;
   }
 
   function matchesKeyword(text, keywords) {
@@ -377,7 +409,7 @@
   }
 
   var TAB_CONFIG = {
-    brand: { get: getKeywords, save: saveKeywords, placeholder: '输入品牌关键词，如 苹果、xx 旗舰店', label: '品牌关键词', empty: '暂无品牌规则' },
+    brand: { get: getKeywords, save: saveKeywords, placeholder: '品牌或标签，如 苹果、拍拍二手、全球购', label: '品牌关键词', empty: '暂无品牌规则' },
     shop: { get: getShops, save: saveShops, placeholder: '输入店铺名，如 xx 官方旗舰店', label: '店铺', empty: '暂无店铺规则' }
   };
 
