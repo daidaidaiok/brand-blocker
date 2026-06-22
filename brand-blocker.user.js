@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         电商屏蔽器
 // @namespace    https://github.com/daidaidaiok/brand-blocker
-// @version      2.5.0
+// @version      2.5.1
 // @description  在淘宝/天猫、京东、拼多多搜索结果中按品牌关键词、商品标签（拍拍二手/全球购等）或店铺名屏蔽商品。支持完全移除/半透明、自动翻页、导入导出 JSON 备份、localStorage 自动镜像防丢失。
 // @author       daidaidaiok
 // @match        *://*.taobao.com/*
@@ -661,20 +661,24 @@
     switchTab('brand');
   }
 
-  function findNextPageButton() {
-    if (platformName === 'jd') {
-      var btn = document.querySelector('a.pn-next');
-      if (btn && !btn.classList.contains('disabled') && btn.getAttribute('aria-disabled') !== 'true') {
-        return btn;
-      }
-      var jdLinks = document.querySelectorAll('a');
-      for (var i = 0; i < jdLinks.length; i++) {
-        var a = jdLinks[i];
-        if ((a.textContent || '').trim() !== '下一页') continue;
-        if (a.classList.contains('disabled') || a.getAttribute('aria-disabled') === 'true') continue;
-        return a;
-      }
-    } else if (platformName === 'taobao') {
+  function findJDNextButton() {
+    var btn = document.querySelector('a.pn-next');
+    if (btn && !btn.classList.contains('disabled') && btn.getAttribute('aria-disabled') !== 'true' && btn.getAttribute('href')) {
+      return btn;
+    }
+    var jdLinks = document.querySelectorAll('a');
+    for (var i = 0; i < jdLinks.length; i++) {
+      var a = jdLinks[i];
+      if ((a.textContent || '').trim() !== '下一页') continue;
+      if (a.classList.contains('disabled') || a.getAttribute('aria-disabled') === 'true') continue;
+      if (!a.getAttribute('href')) continue;
+      return a;
+    }
+    return null;
+  }
+
+  function findClickNextButton() {
+    if (platformName === 'taobao') {
       var nodes = document.querySelectorAll('button, a, span[role="button"]');
       for (var j = 0; j < nodes.length; j++) {
         var el = nodes[j];
@@ -698,23 +702,88 @@
     return null;
   }
 
-  var autoPagingTriggered = false;
+  var jdLoading = false;
+  var jdExhausted = false;
+  var JD_LIST_SELECTORS = ['#J_goodsList ul.gl-warp', '#J_goodsList ul', 'ul.gl-warp', '[id*="goodsList"] ul'];
+
+  function pickFirst(root, selectors) {
+    for (var i = 0; i < selectors.length; i++) {
+      var el = root.querySelector(selectors[i]);
+      if (el) return el;
+    }
+    return null;
+  }
+
+  function hydrateLazyImages(scope) {
+    var imgs = scope.querySelectorAll('img[data-lazy-img], img[data-src]');
+    for (var i = 0; i < imgs.length; i++) {
+      var img = imgs[i];
+      var src = img.getAttribute('data-lazy-img') || img.getAttribute('data-src');
+      if (!src || src === 'done') continue;
+      if (!/^(https?:|\/\/|data:)/.test(src)) src = '//' + src.replace(/^\/+/, '');
+      img.setAttribute('src', src);
+    }
+  }
+
+  function appendJDNextPage() {
+    if (jdLoading || jdExhausted) return;
+    var nextBtn = findJDNextButton();
+    if (!nextBtn) { jdExhausted = true; return; }
+    var nextUrl = nextBtn.href;
+    jdLoading = true;
+    fetch(nextUrl, { credentials: 'include' }).then(function (r) {
+      if (!r.ok) throw new Error('http ' + r.status);
+      return r.text();
+    }).then(function (html) {
+      var doc = new DOMParser().parseFromString(html, 'text/html');
+      var listEl = pickFirst(document, JD_LIST_SELECTORS);
+      var newList = pickFirst(doc, JD_LIST_SELECTORS);
+      if (!listEl || !newList || !newList.children.length) {
+        jdLoading = false;
+        jdExhausted = true;
+        window.location.href = nextUrl;
+        return;
+      }
+      var children = Array.prototype.slice.call(newList.children);
+      for (var i = 0; i < children.length; i++) {
+        var item = document.importNode(children[i], true);
+        hydrateLazyImages(item);
+        listEl.appendChild(item);
+      }
+      var newPager = doc.querySelector('#J_bottomPage');
+      var oldPager = document.querySelector('#J_bottomPage');
+      if (newPager && oldPager) oldPager.innerHTML = newPager.innerHTML;
+      try { history.replaceState(null, '', nextUrl); } catch (e) {}
+      jdLoading = false;
+      setTimeout(blockItems, 200);
+    }).catch(function () {
+      jdLoading = false;
+      jdExhausted = true;
+      window.location.href = nextUrl;
+    });
+  }
+
+  var clickTriggered = false;
   function setupAutoPaging() {
     window.addEventListener('scroll', function () {
-      if (autoPagingTriggered) return;
       if (!getSettings().autoNextPage) return;
       var scrollY = window.scrollY || window.pageYOffset || 0;
       var viewportH = window.innerHeight || document.documentElement.clientHeight;
       var docH = Math.max(document.documentElement.scrollHeight, document.body.scrollHeight);
-      if (docH - scrollY - viewportH > 500) return;
-      var btn = findNextPageButton();
+      if (docH - scrollY - viewportH > 600) return;
+      if (platformName === 'jd') {
+        appendJDNextPage();
+        return;
+      }
+      if (clickTriggered) return;
+      var btn = findClickNextButton();
       if (!btn) return;
-      autoPagingTriggered = true;
+      clickTriggered = true;
       try { btn.click(); }
       catch (e) {
         if (btn.tagName === 'A' && btn.href) window.location.href = btn.href;
       }
-      setTimeout(function () { autoPagingTriggered = false; }, 3000);
+      setTimeout(function () { clickTriggered = false; }, 3000);
     }, { passive: true });
   }
 
