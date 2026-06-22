@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         电商屏蔽器
 // @namespace    https://github.com/daidaidaiok/brand-blocker
-// @version      2.5.1
+// @version      2.5.2
 // @description  在淘宝/天猫、京东、拼多多搜索结果中按品牌关键词、商品标签（拍拍二手/全球购等）或店铺名屏蔽商品。支持完全移除/半透明、自动翻页、导入导出 JSON 备份、localStorage 自动镜像防丢失。
 // @author       daidaidaiok
 // @match        *://*.taobao.com/*
@@ -464,6 +464,11 @@
       + '<label for="bb-auto-next" style="font-size:13px;color:#bbb;cursor:pointer">自动翻页（滚到底自动点下一页）</label>'
       + '<input type="checkbox" id="bb-auto-next" style="width:18px;height:18px;cursor:pointer;accent-color:#6c5ce7">'
       + '</div>';
+    if (platformName === 'jd') {
+      html += '<div style="font-size:11px;color:#888;line-height:1.5;padding:0 0 8px">'
+        + '⚠️ 京东 PC 新版搜索强校验 event.isTrusted，脚本模拟点击会被识别为反爬、列表会被卸载。自动翻页暂不支持京东，请手动翻页（屏蔽规则在每页都会生效）。'
+        + '</div>';
+    }
     html += '</div>';
 
     panel.innerHTML = html;
@@ -661,22 +666,6 @@
     switchTab('brand');
   }
 
-  function findJDNextButton() {
-    var btn = document.querySelector('a.pn-next');
-    if (btn && !btn.classList.contains('disabled') && btn.getAttribute('aria-disabled') !== 'true' && btn.getAttribute('href')) {
-      return btn;
-    }
-    var jdLinks = document.querySelectorAll('a');
-    for (var i = 0; i < jdLinks.length; i++) {
-      var a = jdLinks[i];
-      if ((a.textContent || '').trim() !== '下一页') continue;
-      if (a.classList.contains('disabled') || a.getAttribute('aria-disabled') === 'true') continue;
-      if (!a.getAttribute('href')) continue;
-      return a;
-    }
-    return null;
-  }
-
   function findClickNextButton() {
     if (platformName === 'taobao') {
       var nodes = document.querySelectorAll('button, a, span[role="button"]');
@@ -702,80 +691,16 @@
     return null;
   }
 
-  var jdLoading = false;
-  var jdExhausted = false;
-  var JD_LIST_SELECTORS = ['#J_goodsList ul.gl-warp', '#J_goodsList ul', 'ul.gl-warp', '[id*="goodsList"] ul'];
-
-  function pickFirst(root, selectors) {
-    for (var i = 0; i < selectors.length; i++) {
-      var el = root.querySelector(selectors[i]);
-      if (el) return el;
-    }
-    return null;
-  }
-
-  function hydrateLazyImages(scope) {
-    var imgs = scope.querySelectorAll('img[data-lazy-img], img[data-src]');
-    for (var i = 0; i < imgs.length; i++) {
-      var img = imgs[i];
-      var src = img.getAttribute('data-lazy-img') || img.getAttribute('data-src');
-      if (!src || src === 'done') continue;
-      if (!/^(https?:|\/\/|data:)/.test(src)) src = '//' + src.replace(/^\/+/, '');
-      img.setAttribute('src', src);
-    }
-  }
-
-  function appendJDNextPage() {
-    if (jdLoading || jdExhausted) return;
-    var nextBtn = findJDNextButton();
-    if (!nextBtn) { jdExhausted = true; return; }
-    var nextUrl = nextBtn.href;
-    jdLoading = true;
-    fetch(nextUrl, { credentials: 'include' }).then(function (r) {
-      if (!r.ok) throw new Error('http ' + r.status);
-      return r.text();
-    }).then(function (html) {
-      var doc = new DOMParser().parseFromString(html, 'text/html');
-      var listEl = pickFirst(document, JD_LIST_SELECTORS);
-      var newList = pickFirst(doc, JD_LIST_SELECTORS);
-      if (!listEl || !newList || !newList.children.length) {
-        jdLoading = false;
-        jdExhausted = true;
-        window.location.href = nextUrl;
-        return;
-      }
-      var children = Array.prototype.slice.call(newList.children);
-      for (var i = 0; i < children.length; i++) {
-        var item = document.importNode(children[i], true);
-        hydrateLazyImages(item);
-        listEl.appendChild(item);
-      }
-      var newPager = doc.querySelector('#J_bottomPage');
-      var oldPager = document.querySelector('#J_bottomPage');
-      if (newPager && oldPager) oldPager.innerHTML = newPager.innerHTML;
-      try { history.replaceState(null, '', nextUrl); } catch (e) {}
-      jdLoading = false;
-      setTimeout(blockItems, 200);
-    }).catch(function () {
-      jdLoading = false;
-      jdExhausted = true;
-      window.location.href = nextUrl;
-    });
-  }
-
   var clickTriggered = false;
   function setupAutoPaging() {
+    if (platformName === 'jd') return;
     window.addEventListener('scroll', function () {
       if (!getSettings().autoNextPage) return;
+      if (clickTriggered) return;
       var scrollY = window.scrollY || window.pageYOffset || 0;
       var viewportH = window.innerHeight || document.documentElement.clientHeight;
       var docH = Math.max(document.documentElement.scrollHeight, document.body.scrollHeight);
       if (docH - scrollY - viewportH > 600) return;
-      if (platformName === 'jd') {
-        appendJDNextPage();
-        return;
-      }
-      if (clickTriggered) return;
       var btn = findClickNextButton();
       if (!btn) return;
       clickTriggered = true;
