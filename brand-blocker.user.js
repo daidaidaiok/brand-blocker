@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         电商品牌屏蔽器
+// @name         电商屏蔽器
 // @namespace    https://github.com/daidaidaiok/brand-blocker
-// @version      2.2.9
-// @description  在淘宝/天猫、京东、拼多多搜索结果中按关键词屏蔽品牌商品。支持完全移除/半透明两种模式，修复京东半透明叠加与淘宝留白问题。
+// @version      2.3.0
+// @description  在淘宝/天猫、京东、拼多多搜索结果中按品牌关键词或店铺名屏蔽商品。支持完全移除/半透明两种模式，修复京东半透明叠加与淘宝留白问题。
 // @author       daidaidaiok
 // @match        *://*.taobao.com/*
 // @match        *://*.tmall.com/*
@@ -22,6 +22,7 @@
   'use strict';
 
   var STORAGE_KEY = 'brand_blocker_keywords';
+  var STORAGE_SHOPS = 'brand_blocker_shops';
   var STORAGE_SETTINGS = 'brand_blocker_settings';
 
   function getKeywords() {
@@ -29,6 +30,12 @@
     catch (e) { return []; }
   }
   function saveKeywords(list) { GM_setValue(STORAGE_KEY, JSON.stringify(list)); }
+
+  function getShops() {
+    try { return JSON.parse(GM_getValue(STORAGE_SHOPS, '[]')); }
+    catch (e) { return []; }
+  }
+  function saveShops(list) { GM_setValue(STORAGE_SHOPS, JSON.stringify(list)); }
 
   function getSettings() {
     try { return JSON.parse(GM_getValue(STORAGE_SETTINGS, '{"opacity":0.08,"hideMode":"remove","checkInterval":1500}')); }
@@ -176,6 +183,40 @@
     return null;
   }
 
+  function extractShop(card) {
+    var selectors;
+    if (platformName === 'taobao') {
+      selectors = [
+        '[class*="shopNameText"]',
+        '[class*="shopName"]',
+        '[class*="ShopName"]',
+        '[class*="shop-name"]',
+        '[class*="shopname"]',
+        'a[href*="//shop"]'
+      ];
+    } else if (platformName === 'jd') {
+      selectors = [
+        '[class*="_shopName_"]',
+        '[class*="shopName"]',
+        '[class*="hd-shopname"]',
+        '[class*="curr-shop"]',
+        '[class*="_shop_"]',
+        'a[href*="//mall.jd"]',
+        'a[href*="//shop.jd"]'
+      ];
+    } else {
+      return '';
+    }
+    for (var i = 0; i < selectors.length; i++) {
+      var el = card.querySelector(selectors[i]);
+      if (!el) continue;
+      var raw = el.getAttribute('title') || el.textContent || '';
+      var t = raw.replace(/\s+/g, ' ').trim();
+      if (t.length > 0 && t.length < 60) return t;
+    }
+    return '';
+  }
+
   var badge = document.createElement('div');
   badge.style.cssText = 'position:fixed;bottom:20px;left:20px;z-index:999998;background:#1a1a2e;color:#e0e0e0;padding:8px 16px;border-radius:20px;font-size:13px;font-family:-apple-system,sans-serif;box-shadow:0 4px 20px rgba(0,0,0,.3);cursor:pointer;user-select:none;border:1px solid rgba(255,255,255,.1)';
   document.body.appendChild(badge);
@@ -183,26 +224,27 @@
   var panel = null;
 
   function updateBadge() {
-    var keywords = getKeywords();
+    var ruleCount = getKeywords().length + getShops().length;
     var total = blockedCount;
-    if (keywords.length === 0) {
-      badge.innerHTML = '🛡️ 品牌屏蔽器 <span style="opacity:.5">（点击设置）</span>';
+    if (ruleCount === 0) {
+      badge.innerHTML = '🛡️ 电商屏蔽器 <span style="opacity:.5">（点击设置）</span>';
       badge.style.background = '#1a1a2e';
     } else if (total > 0) {
-      badge.innerHTML = '🛡️ 已屏蔽 <b style="color:#ff6b6b">' + total + '</b> 件 · ' + keywords.length + ' 条规则';
+      badge.innerHTML = '🛡️ 已屏蔽 <b style="color:#ff6b6b">' + total + '</b> 件 · ' + ruleCount + ' 条规则';
       badge.style.background = '#2d1a1a';
     } else {
-      badge.innerHTML = '🛡️ ' + keywords.length + ' 条规则生效中';
+      badge.innerHTML = '🛡️ ' + ruleCount + ' 条规则生效中';
       badge.style.background = '#1a2e1a';
     }
   }
 
   function blockItems() {
     var keywords = getKeywords();
+    var shops = getShops();
     var settings = getSettings();
     var products = findProducts();
 
-    if (!keywords.length) {
+    if (!keywords.length && !shops.length) {
       blockedCount = 0;
       updateBadge();
       return;
@@ -214,6 +256,10 @@
 
       var title = extractTitle(card);
       var matched = matchesKeyword(title, keywords);
+      if (!matched && shops.length) {
+        var shopName = extractShop(card);
+        if (shopName) matched = matchesKeyword(shopName, shops);
+      }
 
       if (matched) {
         card.setAttribute('data-brand-blocked', 'done');
@@ -244,91 +290,139 @@
     updateBadge();
   }
 
+  var TAB_CONFIG = {
+    brand: { get: getKeywords, save: saveKeywords, placeholder: '输入品牌关键词，如 苹果、xx 旗舰店', label: '品牌关键词', empty: '暂无品牌规则' },
+    shop: { get: getShops, save: saveShops, placeholder: '输入店铺名，如 xx 官方旗舰店', label: '店铺', empty: '暂无店铺规则' }
+  };
+
   function togglePanel() {
-    if (!panel) {
-      panel = document.createElement('div');
-      panel.style.cssText = 'position:fixed;bottom:70px;left:20px;z-index:999999;background:#16162a;color:#e0e0e0;width:380px;border-radius:16px;font-family:-apple-system,sans-serif;box-shadow:0 8px 40px rgba(0,0,0,.5);overflow:hidden;border:1px solid rgba(255,255,255,.08)';
-
-      var html = '<style>select,select option{color:#fff!important;background:#222!important}select{border:1px solid rgba(255,255,255,0.1)!important;padding:6px 10px!important;border-radius:8px!important}input[type=range]{accent-color:#6c5ce7!important}</style>';
-      html += '<div style="padding:18px 20px 14px;background:linear-gradient(135deg,#1a1a3e,#2a1a3e);border-bottom:1px solid rgba(255,255,255,0.06)">';
-      html += '<h3 style="margin:0;font-size:16px;font-weight:600;color:#fff">🛡️ 电商品牌屏蔽器</h3></div>';
-      html += '<div style="padding:16px 20px;max-height:420px;overflow-y:auto">';
-      html += '<div style="display:flex;gap:8px;margin-bottom:16px"><input type="text" id="bb-input" placeholder="输入品牌名..." style="flex:1;padding:10px;border-radius:10px;border:1px solid rgba(255,255,255,0.1);background:rgba(255,255,255,0.06);color:#fff"><button id="bb-add" style="padding:10px 18px;border-radius:10px;border:none;background:linear-gradient(135deg,#6c5ce7,#a855f7);color:#fff;cursor:pointer">添加</button></div>';
-      html += '<ul id="bb-list" style="list-style:none;padding:0;margin:0"></ul>';
-      html += '<div style="display:flex;align-items:center;justify-content:space-between;padding:16px 0 8px"><label style="font-size:13px;color:#bbb">屏蔽模式</label><select id="bb-mode"><option value="remove">完全移除</option><option value="fade">半透明</option></select></div>';
-      html += '<div id="bb-opacity-row" style="display:flex;align-items:center;justify-content:space-between;padding:8px 0"><label style="font-size:13px;color:#bbb">透明度</label><input type="range" id="bb-opacity" min="0" max="0.5" step="0.05" style="width:140px"></div>';
-      html += '</div>';
-
-      panel.innerHTML = html;
-      document.body.appendChild(panel);
-
-      var inp = document.getElementById('bb-input');
-      var addBtn = document.getElementById('bb-add');
-      var listEl = document.getElementById('bb-list');
-      var modeEl = document.getElementById('bb-mode');
-      var opacityEl = document.getElementById('bb-opacity');
-      var opacityRowEl = document.getElementById('bb-opacity-row');
-
-      function renderList() {
-        var kws = getKeywords();
-        listEl.innerHTML = kws.length
-          ? kws.map(function (k, i) {
-              return '<li style="display:flex;justify-content:space-between;padding:10px;background:rgba(255,255,255,0.04);margin-bottom:6px;border-radius:10px"><span></span><button data-idx="' + i + '" class="bb-rm" style="background:none;border:none;color:#ff6b6b;cursor:pointer">移除</button></li>';
-            }).join('')
-          : '<div style="text-align:center;color:#555">列表为空</div>';
-        var spans = listEl.querySelectorAll('li > span');
-        for (var si = 0; si < spans.length; si++) spans[si].textContent = kws[si];
-        listEl.querySelectorAll('.bb-rm').forEach(function (btn) {
-          btn.onclick = function () {
-            var k = getKeywords();
-            k.splice(parseInt(this.dataset.idx, 10), 1);
-            saveKeywords(k);
-            renderList();
-            blockedCount = 0;
-            location.reload();
-          };
-        });
-      }
-
-      addBtn.onclick = function () {
-        var v = inp.value.trim();
-        if (v) {
-          var k = getKeywords();
-          k.push(v);
-          saveKeywords(k);
-          inp.value = '';
-          renderList();
-          blockItems();
-        }
-      };
-      inp.addEventListener('keydown', function (e) {
-        if (e.key === 'Enter') addBtn.onclick();
-      });
-
-      modeEl.value = getSettings().hideMode;
-      opacityEl.value = getSettings().opacity;
-      opacityRowEl.style.display = (modeEl.value === 'fade') ? 'flex' : 'none';
-
-      modeEl.onchange = function () {
-        var s = getSettings();
-        s.hideMode = modeEl.value;
-        saveSettings(s);
-        opacityRowEl.style.display = (s.hideMode === 'fade') ? 'flex' : 'none';
-        location.reload();
-      };
-
-      opacityEl.oninput = function () {
-        var s = getSettings();
-        s.opacity = parseFloat(opacityEl.value);
-        saveSettings(s);
-        document.querySelectorAll('[data-brand-blocked="done"]').forEach(function (el) {
-          if (s.hideMode === 'fade') el.style.setProperty('opacity', String(s.opacity), 'important');
-        });
-      };
-      renderList();
-    } else {
+    if (panel) {
       panel.style.display = panel.style.display === 'none' ? 'block' : 'none';
+      return;
     }
+    panel = document.createElement('div');
+    panel.style.cssText = 'position:fixed;bottom:70px;left:20px;z-index:999999;background:#16162a;color:#e0e0e0;width:380px;border-radius:16px;font-family:-apple-system,sans-serif;box-shadow:0 8px 40px rgba(0,0,0,.5);overflow:hidden;border:1px solid rgba(255,255,255,.08)';
+
+    var html = '<style>'
+      + 'select,select option{color:#fff!important;background:#222!important}'
+      + 'select{border:1px solid rgba(255,255,255,0.1)!important;padding:6px 10px!important;border-radius:8px!important}'
+      + 'input[type=range]{accent-color:#6c5ce7!important}'
+      + '.bb-tab{flex:1;background:transparent;border:0;color:#888;padding:12px 4px;cursor:pointer;font-size:13px;border-bottom:2px solid transparent;font-family:inherit}'
+      + '.bb-tab[data-active="1"]{color:#fff;border-bottom-color:#6c5ce7;font-weight:600}'
+      + '</style>';
+    html += '<div style="padding:18px 20px 14px;background:linear-gradient(135deg,#1a1a3e,#2a1a3e);border-bottom:1px solid rgba(255,255,255,0.06)">'
+      + '<h3 style="margin:0;font-size:16px;font-weight:600;color:#fff">🛡️ 电商屏蔽器</h3></div>';
+    html += '<div style="display:flex;padding:0 20px;border-bottom:1px solid rgba(255,255,255,0.06)">'
+      + '<button class="bb-tab" data-tab="brand" data-active="1">品牌关键词</button>'
+      + '<button class="bb-tab" data-tab="shop">店铺</button>'
+      + '</div>';
+    html += '<div style="padding:16px 20px;max-height:420px;overflow-y:auto">';
+    html += '<div style="display:flex;gap:8px;margin-bottom:16px">'
+      + '<input type="text" id="bb-input" placeholder="" style="flex:1;padding:10px;border-radius:10px;border:1px solid rgba(255,255,255,0.1);background:rgba(255,255,255,0.06);color:#fff">'
+      + '<button id="bb-add" style="padding:10px 18px;border-radius:10px;border:none;background:linear-gradient(135deg,#6c5ce7,#a855f7);color:#fff;cursor:pointer">添加</button>'
+      + '</div>';
+    html += '<ul id="bb-list" style="list-style:none;padding:0;margin:0"></ul>';
+    html += '<div style="display:flex;align-items:center;justify-content:space-between;padding:16px 0 8px">'
+      + '<label style="font-size:13px;color:#bbb">屏蔽模式</label>'
+      + '<select id="bb-mode"><option value="remove">完全移除</option><option value="fade">半透明</option></select>'
+      + '</div>';
+    html += '<div id="bb-opacity-row" style="display:flex;align-items:center;justify-content:space-between;padding:8px 0">'
+      + '<label style="font-size:13px;color:#bbb">透明度</label>'
+      + '<input type="range" id="bb-opacity" min="0" max="0.5" step="0.05" style="width:140px">'
+      + '</div>';
+    html += '</div>';
+
+    panel.innerHTML = html;
+    document.body.appendChild(panel);
+
+    var inp = panel.querySelector('#bb-input');
+    var addBtn = panel.querySelector('#bb-add');
+    var listEl = panel.querySelector('#bb-list');
+    var modeEl = panel.querySelector('#bb-mode');
+    var opacityEl = panel.querySelector('#bb-opacity');
+    var opacityRowEl = panel.querySelector('#bb-opacity-row');
+    var tabBtns = panel.querySelectorAll('.bb-tab');
+    var currentTab = 'brand';
+
+    function renderList() {
+      var cfg = TAB_CONFIG[currentTab];
+      var items = cfg.get();
+      if (!items.length) {
+        listEl.innerHTML = '<div style="text-align:center;color:#555;padding:8px">' + cfg.empty + '</div>';
+        return;
+      }
+      var rows = items.map(function (_, i) {
+        return '<li style="display:flex;justify-content:space-between;align-items:center;padding:10px;background:rgba(255,255,255,0.04);margin-bottom:6px;border-radius:10px"><span></span><button data-idx="' + i + '" class="bb-rm" style="background:none;border:none;color:#ff6b6b;cursor:pointer">移除</button></li>';
+      }).join('');
+      listEl.innerHTML = rows;
+      var spans = listEl.querySelectorAll('li > span');
+      for (var si = 0; si < spans.length; si++) spans[si].textContent = items[si];
+      listEl.querySelectorAll('.bb-rm').forEach(function (btn) {
+        btn.onclick = function () {
+          var c = TAB_CONFIG[currentTab];
+          var k = c.get();
+          k.splice(parseInt(this.dataset.idx, 10), 1);
+          c.save(k);
+          renderList();
+          blockedCount = 0;
+          location.reload();
+        };
+      });
+    }
+
+    function switchTab(name) {
+      currentTab = name;
+      tabBtns.forEach(function (b) {
+        if (b.dataset.tab === name) b.setAttribute('data-active', '1');
+        else b.removeAttribute('data-active');
+      });
+      inp.placeholder = TAB_CONFIG[name].placeholder;
+      renderList();
+    }
+
+    tabBtns.forEach(function (b) {
+      b.onclick = function () { switchTab(this.dataset.tab); };
+    });
+
+    addBtn.onclick = function () {
+      var v = inp.value.trim();
+      if (!v) return;
+      var cfg = TAB_CONFIG[currentTab];
+      var k = cfg.get();
+      if (k.indexOf(v) >= 0) { inp.value = ''; return; }
+      k.push(v);
+      cfg.save(k);
+      inp.value = '';
+      renderList();
+      blockItems();
+    };
+    inp.addEventListener('keydown', function (e) {
+      if (e.key === 'Enter') addBtn.onclick();
+    });
+
+    var s0 = getSettings();
+    modeEl.value = s0.hideMode === 'fade' ? 'fade' : 'remove';
+    opacityEl.value = s0.opacity;
+    opacityRowEl.style.display = (modeEl.value === 'fade') ? 'flex' : 'none';
+
+    modeEl.onchange = function () {
+      var s = getSettings();
+      s.hideMode = modeEl.value;
+      saveSettings(s);
+      opacityRowEl.style.display = (s.hideMode === 'fade') ? 'flex' : 'none';
+      location.reload();
+    };
+
+    opacityEl.oninput = function () {
+      var s = getSettings();
+      s.opacity = parseFloat(opacityEl.value);
+      saveSettings(s);
+      document.querySelectorAll('[data-brand-blocked="done"]').forEach(function (el) {
+        if (s.hideMode === 'fade') el.style.setProperty('opacity', String(s.opacity), 'important');
+      });
+    };
+
+    switchTab('brand');
   }
 
   badge.onclick = togglePanel;
