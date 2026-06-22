@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         电商屏蔽器
 // @namespace    https://github.com/daidaidaiok/brand-blocker
-// @version      2.3.0
+// @version      2.3.1
 // @description  在淘宝/天猫、京东、拼多多搜索结果中按品牌关键词或店铺名屏蔽商品。支持完全移除/半透明两种模式，修复京东半透明叠加与淘宝留白问题。
 // @author       daidaidaiok
 // @match        *://*.taobao.com/*
@@ -183,6 +183,17 @@
     return null;
   }
 
+  var SHOP_HINT_RE = /旗舰店|专营店|专卖店|官方店|自营|二手|严选|集合店|官方旗舰/;
+
+  function cleanShopText(raw) {
+    if (!raw) return '';
+    var t = String(raw).replace(/\s+/g, ' ').trim();
+    if (t.length < 2 || t.length > 60) return '';
+    if (/[¥￥]/.test(t)) return '';
+    if (/^\d+(\.\d+)?$/.test(t)) return '';
+    return t;
+  }
+
   function extractShop(card) {
     var selectors;
     if (platformName === 'taobao') {
@@ -192,7 +203,11 @@
         '[class*="ShopName"]',
         '[class*="shop-name"]',
         '[class*="shopname"]',
-        'a[href*="//shop"]'
+        '[class*="shopInfo"]',
+        '[class*="seller"]',
+        'a[href*="//shop"]',
+        'a[href*=".taobao.com/shop"]',
+        'a[href*=".tmall.com"][href*="shop"]'
       ];
     } else if (platformName === 'jd') {
       selectors = [
@@ -201,8 +216,15 @@
         '[class*="hd-shopname"]',
         '[class*="curr-shop"]',
         '[class*="_shop_"]',
+        '[class*="_seller_"]',
+        '[class*="_storeName_"]',
+        '[class*="storeName"]',
+        '[class*="shop_link"]',
         'a[href*="//mall.jd"]',
-        'a[href*="//shop.jd"]'
+        'a[href*="//shop.jd"]',
+        'a[href*="//paipai.jd"]',
+        'a[href*="//pp.jd"]',
+        'a[href*="paipai.com"]'
       ];
     } else {
       return '';
@@ -210,9 +232,21 @@
     for (var i = 0; i < selectors.length; i++) {
       var el = card.querySelector(selectors[i]);
       if (!el) continue;
-      var raw = el.getAttribute('title') || el.textContent || '';
-      var t = raw.replace(/\s+/g, ' ').trim();
-      if (t.length > 0 && t.length < 60) return t;
+      var t = cleanShopText(el.getAttribute('title') || el.textContent || '');
+      if (t) return t;
+    }
+    var anchors = card.querySelectorAll('a[title], a');
+    for (var j = 0; j < anchors.length; j++) {
+      var a = anchors[j];
+      var ta = cleanShopText(a.getAttribute('title') || a.textContent || '');
+      if (ta && SHOP_HINT_RE.test(ta)) return ta;
+    }
+    var leaves = card.querySelectorAll('span, div, em, b');
+    for (var k = 0; k < leaves.length; k++) {
+      var leaf = leaves[k];
+      if (leaf.children.length) continue;
+      var tl = cleanShopText(leaf.getAttribute('title') || leaf.textContent || '');
+      if (tl && SHOP_HINT_RE.test(tl)) return tl;
     }
     return '';
   }
