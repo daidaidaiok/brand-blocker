@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         电商屏蔽器
 // @namespace    https://github.com/daidaidaiok/brand-blocker
-// @version      2.3.1
-// @description  在淘宝/天猫、京东、拼多多搜索结果中按品牌关键词或店铺名屏蔽商品。支持完全移除/半透明两种模式，修复京东半透明叠加与淘宝留白问题。
+// @version      2.4.0
+// @description  在淘宝/天猫、京东、拼多多搜索结果中按品牌关键词或店铺名屏蔽商品。支持完全移除/半透明、导入导出 JSON 备份、localStorage 自动镜像防丢失。
 // @author       daidaidaiok
 // @match        *://*.taobao.com/*
 // @match        *://*.tmall.com/*
@@ -24,24 +24,76 @@
   var STORAGE_KEY = 'brand_blocker_keywords';
   var STORAGE_SHOPS = 'brand_blocker_shops';
   var STORAGE_SETTINGS = 'brand_blocker_settings';
+  var BACKUP_LS_KEY = 'brand_blocker_backup';
+  var ALL_KEYS = [STORAGE_KEY, STORAGE_SHOPS, STORAGE_SETTINGS];
+
+  function readMirror() {
+    try {
+      var raw = window.localStorage.getItem(BACKUP_LS_KEY);
+      if (!raw) return null;
+      var obj = JSON.parse(raw);
+      if (!obj || typeof obj !== 'object' || !obj.data) return null;
+      return obj;
+    } catch (e) { return null; }
+  }
+
+  function writeMirror() {
+    try {
+      var data = {};
+      for (var i = 0; i < ALL_KEYS.length; i++) {
+        var k = ALL_KEYS[i];
+        data[k] = GM_getValue(k, null);
+      }
+      var payload = { schema: 1, updatedAt: new Date().toISOString(), data: data };
+      window.localStorage.setItem(BACKUP_LS_KEY, JSON.stringify(payload));
+    } catch (e) { /* 配额满或隐私模式忽略 */ }
+  }
+
+  function gmSetMirrored(key, value) {
+    GM_setValue(key, value);
+    writeMirror();
+  }
+
+  (function autoRestore() {
+    var allEmpty = true;
+    for (var i = 0; i < ALL_KEYS.length; i++) {
+      var v = GM_getValue(ALL_KEYS[i], null);
+      if (v !== null && v !== undefined && v !== '' && v !== '[]') { allEmpty = false; break; }
+    }
+    if (!allEmpty) return;
+    var mirror = readMirror();
+    if (!mirror || !mirror.data) return;
+    var restored = 0;
+    for (var k in mirror.data) {
+      if (!Object.prototype.hasOwnProperty.call(mirror.data, k)) continue;
+      if (ALL_KEYS.indexOf(k) < 0) continue;
+      var mv = mirror.data[k];
+      if (mv == null) continue;
+      GM_setValue(k, mv);
+      restored++;
+    }
+    if (restored > 0) {
+      try { console.log('[brand-blocker] 已从 localStorage 自动恢复', mirror.updatedAt); } catch (e) {}
+    }
+  })();
 
   function getKeywords() {
     try { return JSON.parse(GM_getValue(STORAGE_KEY, '[]')); }
     catch (e) { return []; }
   }
-  function saveKeywords(list) { GM_setValue(STORAGE_KEY, JSON.stringify(list)); }
+  function saveKeywords(list) { gmSetMirrored(STORAGE_KEY, JSON.stringify(list)); }
 
   function getShops() {
     try { return JSON.parse(GM_getValue(STORAGE_SHOPS, '[]')); }
     catch (e) { return []; }
   }
-  function saveShops(list) { GM_setValue(STORAGE_SHOPS, JSON.stringify(list)); }
+  function saveShops(list) { gmSetMirrored(STORAGE_SHOPS, JSON.stringify(list)); }
 
   function getSettings() {
     try { return JSON.parse(GM_getValue(STORAGE_SETTINGS, '{"opacity":0.08,"hideMode":"remove","checkInterval":1500}')); }
     catch (e) { return { opacity: 0.08, hideMode: 'remove', checkInterval: 1500 }; }
   }
-  function saveSettings(s) { GM_setValue(STORAGE_SETTINGS, JSON.stringify(s)); }
+  function saveSettings(s) { gmSetMirrored(STORAGE_SETTINGS, JSON.stringify(s)); }
 
   var site = location.hostname;
   var platformName = null;
@@ -356,7 +408,19 @@
       + '<button id="bb-add" style="padding:10px 18px;border-radius:10px;border:none;background:linear-gradient(135deg,#6c5ce7,#a855f7);color:#fff;cursor:pointer">添加</button>'
       + '</div>';
     html += '<ul id="bb-list" style="list-style:none;padding:0;margin:0"></ul>';
-    html += '<div style="display:flex;align-items:center;justify-content:space-between;padding:16px 0 8px">'
+    html += '<div style="display:flex;gap:8px;padding:12px 0 4px;border-top:1px solid rgba(255,255,255,0.06);margin-top:12px">'
+      + '<button id="bb-export" style="flex:1;padding:8px;border-radius:8px;border:1px solid rgba(255,255,255,0.15);background:rgba(255,255,255,0.04);color:#e0e0e0;cursor:pointer">导出 JSON</button>'
+      + '<button id="bb-import" style="flex:1;padding:8px;border-radius:8px;border:1px solid rgba(255,255,255,0.15);background:rgba(255,255,255,0.04);color:#e0e0e0;cursor:pointer">导入 JSON</button>'
+      + '</div>';
+    html += '<div id="bb-io-wrap" style="display:none;padding:8px 0">'
+      + '<textarea id="bb-io-text" style="width:100%;height:120px;font-family:monospace;font-size:12px;background:rgba(0,0,0,0.3);color:#e0e0e0;border:1px solid rgba(255,255,255,0.1);border-radius:8px;padding:8px;box-sizing:border-box" placeholder="在此粘贴备份 JSON 后点「确认导入」"></textarea>'
+      + '<div style="display:flex;gap:8px;margin-top:6px">'
+      + '<button id="bb-io-confirm" style="flex:1;padding:8px;border-radius:8px;border:none;background:linear-gradient(135deg,#6c5ce7,#a855f7);color:#fff;cursor:pointer">确认导入</button>'
+      + '<button id="bb-io-cancel" style="flex:1;padding:8px;border-radius:8px;border:1px solid rgba(255,255,255,0.15);background:transparent;color:#bbb;cursor:pointer">取消</button>'
+      + '</div>'
+      + '<div id="bb-io-msg" style="min-height:18px;margin-top:6px;font-size:12px;color:#7bd389"></div>'
+      + '</div>';
+    html += '<div style="display:flex;align-items:center;justify-content:space-between;padding:8px 0">'
       + '<label style="font-size:13px;color:#bbb">屏蔽模式</label>'
       + '<select id="bb-mode"><option value="remove">完全移除</option><option value="fade">半透明</option></select>'
       + '</div>';
@@ -433,6 +497,100 @@
     inp.addEventListener('keydown', function (e) {
       if (e.key === 'Enter') addBtn.onclick();
     });
+
+    var exportBtn = panel.querySelector('#bb-export');
+    var importBtn = panel.querySelector('#bb-import');
+    var ioWrap = panel.querySelector('#bb-io-wrap');
+    var ioText = panel.querySelector('#bb-io-text');
+    var ioConfirm = panel.querySelector('#bb-io-confirm');
+    var ioCancel = panel.querySelector('#bb-io-cancel');
+    var ioMsg = panel.querySelector('#bb-io-msg');
+
+    function showIoMsg(text, ok) {
+      ioMsg.textContent = text;
+      ioMsg.style.color = ok ? '#7bd389' : '#ff6b6b';
+    }
+
+    function buildExportPayload() {
+      return {
+        schema: 1,
+        exportedAt: new Date().toISOString(),
+        scriptVersion: (typeof GM_info !== 'undefined' && GM_info.script) ? GM_info.script.version : 'unknown',
+        data: {
+          brand_blocker_keywords: GM_getValue(STORAGE_KEY, '[]'),
+          brand_blocker_shops: GM_getValue(STORAGE_SHOPS, '[]'),
+          brand_blocker_settings: GM_getValue(STORAGE_SETTINGS, '')
+        }
+      };
+    }
+
+    exportBtn.onclick = function () {
+      var payload = buildExportPayload();
+      var json = JSON.stringify(payload, null, 2);
+      var copied = false;
+      try {
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          navigator.clipboard.writeText(json);
+          copied = true;
+        }
+      } catch (e) {}
+      try {
+        var blob = new Blob([json], { type: 'application/json' });
+        var url = URL.createObjectURL(blob);
+        var a = document.createElement('a');
+        a.href = url;
+        a.download = 'brand-blocker-backup-' + new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19) + '.json';
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        setTimeout(function () { URL.revokeObjectURL(url); }, 1000);
+      } catch (e) {}
+      ioWrap.style.display = 'block';
+      ioText.value = json;
+      ioText.readOnly = true;
+      showIoMsg(copied ? '已复制到剪贴板并触发文件下载' : '已触发文件下载（剪贴板不可用）', true);
+    };
+
+    importBtn.onclick = function () {
+      ioWrap.style.display = 'block';
+      ioText.value = '';
+      ioText.readOnly = false;
+      ioText.placeholder = '在此粘贴备份 JSON 后点「确认导入」';
+      showIoMsg('', true);
+      ioText.focus();
+    };
+
+    ioCancel.onclick = function () {
+      ioWrap.style.display = 'none';
+      ioText.value = '';
+    };
+
+    ioConfirm.onclick = function () {
+      var text = ioText.value.trim();
+      if (!text) { showIoMsg('请先粘贴 JSON', false); return; }
+      var payload;
+      try { payload = JSON.parse(text); }
+      catch (e) { showIoMsg('JSON 解析失败: ' + e.message, false); return; }
+      if (!payload || typeof payload !== 'object' || !payload.data) {
+        showIoMsg('备份格式不正确，缺少 data 字段', false); return;
+      }
+      var whitelist = {};
+      whitelist[STORAGE_KEY] = 1;
+      whitelist[STORAGE_SHOPS] = 1;
+      whitelist[STORAGE_SETTINGS] = 1;
+      var n = 0;
+      for (var ikey in payload.data) {
+        if (!Object.prototype.hasOwnProperty.call(payload.data, ikey)) continue;
+        if (!whitelist[ikey]) continue;
+        var val = payload.data[ikey];
+        if (val == null) continue;
+        if (typeof val !== 'string') val = JSON.stringify(val);
+        gmSetMirrored(ikey, val);
+        n++;
+      }
+      showIoMsg('已恢复 ' + n + ' 个键，2 秒后刷新页面', true);
+      setTimeout(function () { location.reload(); }, 2000);
+    };
 
     var s0 = getSettings();
     modeEl.value = s0.hideMode === 'fade' ? 'fade' : 'remove';
